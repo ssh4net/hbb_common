@@ -102,6 +102,7 @@ type KeyPair = (Vec<u8>, Vec<u8>);
 lazy_static::lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
     static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());
+    static ref BOOTSTRAP_CONFIG: RwLock<BootstrapConfig> = RwLock::new(BootstrapConfig::load());
     static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
     static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
     static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
@@ -155,9 +156,6 @@ const CHARS: &[char] = &[
     '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
-
-pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
-pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
 
 pub const RENDEZVOUS_PORT: i32 = 21116;
 pub const RELAY_PORT: i32 = 21117;
@@ -274,6 +272,36 @@ pub struct Config2 {
     // the other scalar value must before this
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
     pub options: HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct BootstrapConfig {
+    #[serde(
+        rename = "rendezvous-server",
+        default,
+        deserialize_with = "deserialize_string"
+    )]
+    rendezvous_server: String,
+    #[serde(
+        rename = "rendezvous-servers",
+        default,
+        deserialize_with = "deserialize_vec_string"
+    )]
+    rendezvous_servers: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string")]
+    key: String,
+    #[serde(
+        rename = "api-server",
+        default,
+        deserialize_with = "deserialize_string"
+    )]
+    api_server: String,
+    #[serde(
+        rename = "update-server",
+        default,
+        deserialize_with = "deserialize_string"
+    )]
+    update_server: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -557,6 +585,32 @@ impl Config2 {
     }
 }
 
+impl BootstrapConfig {
+    fn load() -> BootstrapConfig {
+        Config::load_::<BootstrapConfig>("-bootstrap")
+    }
+
+    pub fn file() -> PathBuf {
+        Config::file_("-bootstrap")
+    }
+
+    fn get_rendezvous_servers(&self) -> Vec<String> {
+        if !self.rendezvous_servers.is_empty() {
+            return self
+                .rendezvous_servers
+                .iter()
+                .filter(|server| !server.is_empty())
+                .cloned()
+                .collect();
+        }
+        if self.rendezvous_server.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.rendezvous_server.clone()]
+        }
+    }
+}
+
 pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
     file: PathBuf,
 ) -> T {
@@ -698,6 +752,10 @@ impl Config {
 
     pub fn file() -> PathBuf {
         Self::file_("")
+    }
+
+    pub fn bootstrap_file() -> PathBuf {
+        BootstrapConfig::file()
     }
 
     fn file_(suffix: &str) -> PathBuf {
@@ -850,6 +908,12 @@ impl Config {
     pub fn get_rendezvous_server() -> String {
         let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         if rendezvous_server.is_empty() {
+            rendezvous_server = Self::get_bootstrap_rendezvous_servers()
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+        }
+        if rendezvous_server.is_empty() {
             rendezvous_server = Self::get_option("custom-rendezvous-server");
         }
         if rendezvous_server.is_empty() {
@@ -864,7 +928,7 @@ impl Config {
                 .next()
                 .unwrap_or_default();
         }
-        if !rendezvous_server.contains(':') {
+        if !rendezvous_server.is_empty() && !rendezvous_server.contains(':') {
             rendezvous_server = format!("{rendezvous_server}:{RENDEZVOUS_PORT}");
         }
         rendezvous_server
@@ -874,6 +938,10 @@ impl Config {
         let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         if !s.is_empty() {
             return vec![s];
+        }
+        let ss = Self::get_bootstrap_rendezvous_servers();
+        if !ss.is_empty() {
+            return ss;
         }
         let s = Self::get_option("custom-rendezvous-server");
         if !s.is_empty() {
@@ -894,7 +962,28 @@ impl Config {
                 return ss;
             }
         }
-        return RENDEZVOUS_SERVERS.iter().map(|x| x.to_string()).collect();
+        Vec::new()
+    }
+
+    pub fn get_bootstrap_rendezvous_servers() -> Vec<String> {
+        BOOTSTRAP_CONFIG.read().unwrap().get_rendezvous_servers()
+    }
+
+    pub fn get_bootstrap_key() -> String {
+        BOOTSTRAP_CONFIG.read().unwrap().key.clone()
+    }
+
+    pub fn get_bootstrap_api_server() -> String {
+        BOOTSTRAP_CONFIG.read().unwrap().api_server.clone()
+    }
+
+    pub fn get_bootstrap_update_server() -> String {
+        BOOTSTRAP_CONFIG.read().unwrap().update_server.clone()
+    }
+
+    #[cfg(test)]
+    fn set_bootstrap_config_for_test(config: BootstrapConfig) {
+        *BOOTSTRAP_CONFIG.write().unwrap() = config;
     }
 
     pub fn reset_online() {
@@ -3399,6 +3488,66 @@ mod tests {
                 ..Default::default()
             })
         );
+    }
+
+    #[test]
+    fn test_bootstrap_rendezvous_resolution() {
+        let saved_bootstrap = BOOTSTRAP_CONFIG.read().unwrap().clone();
+        let saved_exe = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
+        let saved_prod = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
+        let saved_config2 = CONFIG2.read().unwrap().clone();
+
+        Config::set_bootstrap_config_for_test(BootstrapConfig::default());
+        *EXE_RENDEZVOUS_SERVER.write().unwrap() = "".to_owned();
+        *PROD_RENDEZVOUS_SERVER.write().unwrap() = "".to_owned();
+        {
+            let mut config2 = CONFIG2.write().unwrap();
+            config2.rendezvous_server.clear();
+            config2.serial = 0;
+            config2.options.clear();
+        }
+
+        assert_eq!(Config::get_rendezvous_server(), "");
+        assert!(Config::get_rendezvous_servers().is_empty());
+
+        let bootstrap = BootstrapConfig {
+            rendezvous_servers: vec!["lan-only.example".to_owned(), "vpn-only.example".to_owned()],
+            key: "bootstrap-key".to_owned(),
+            api_server: "http://lan-only.example:21114".to_owned(),
+            update_server: "http://updates.example/version/latest".to_owned(),
+            ..Default::default()
+        };
+        Config::set_bootstrap_config_for_test(bootstrap);
+        {
+            let mut config2 = CONFIG2.write().unwrap();
+            config2.options.insert(
+                "custom-rendezvous-server".to_owned(),
+                "mutable.example".to_owned(),
+            );
+        }
+
+        assert_eq!(
+            Config::get_rendezvous_server(),
+            format!("lan-only.example:{RENDEZVOUS_PORT}")
+        );
+        assert_eq!(
+            Config::get_rendezvous_servers(),
+            vec!["lan-only.example".to_owned(), "vpn-only.example".to_owned()]
+        );
+        assert_eq!(Config::get_bootstrap_key(), "bootstrap-key");
+        assert_eq!(
+            Config::get_bootstrap_api_server(),
+            "http://lan-only.example:21114"
+        );
+        assert_eq!(
+            Config::get_bootstrap_update_server(),
+            "http://updates.example/version/latest"
+        );
+
+        Config::set_bootstrap_config_for_test(saved_bootstrap);
+        *EXE_RENDEZVOUS_SERVER.write().unwrap() = saved_exe;
+        *PROD_RENDEZVOUS_SERVER.write().unwrap() = saved_prod;
+        *CONFIG2.write().unwrap() = saved_config2;
     }
 
     #[test]
