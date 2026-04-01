@@ -1223,6 +1223,9 @@ impl Config {
         let mut res = DEFAULT_SETTINGS.read().unwrap().clone();
         res.extend(CONFIG2.read().unwrap().options.clone());
         res.extend(OVERWRITE_SETTINGS.read().unwrap().clone());
+        for (key, value) in res.iter_mut() {
+            Self::maybe_decrypt_option_value(key, value);
+        }
         res
     }
 
@@ -1233,6 +1236,9 @@ impl Config {
 
     pub fn set_options(mut v: HashMap<String, String>) {
         Self::purify_options(&mut v);
+        for (key, value) in v.iter_mut() {
+            Self::maybe_encrypt_option_value(key, value);
+        }
         let mut config = CONFIG2.write().unwrap();
         if config.options == v {
             return;
@@ -1242,13 +1248,15 @@ impl Config {
     }
 
     pub fn get_option(k: &str) -> String {
-        get_or(
+        let mut value = get_or(
             &OVERWRITE_SETTINGS,
             &CONFIG2.read().unwrap().options,
             &DEFAULT_SETTINGS,
             k,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        Self::maybe_decrypt_option_value(k, &mut value);
+        value
     }
 
     pub fn get_bool_option(k: &str) -> bool {
@@ -1264,15 +1272,40 @@ impl Config {
             return;
         }
         let mut config = CONFIG2.write().unwrap();
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.options.get(&k) {
+        let mut stored = v;
+        Self::maybe_encrypt_option_value(&k, &mut stored);
+        let v2 = if stored.is_empty() {
+            None
+        } else {
+            Some(stored.as_str())
+        };
+        if v2 != config.options.get(&k).map(|value| value.as_str()) {
             if v2.is_none() {
                 config.options.remove(&k);
             } else {
-                config.options.insert(k, v);
+                config.options.insert(k, stored);
             }
             config.store();
         }
+    }
+
+    fn is_encrypted_option(k: &str) -> bool {
+        matches!(k, keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE)
+    }
+
+    fn maybe_decrypt_option_value(k: &str, v: &mut String) {
+        if !Self::is_encrypted_option(k) || v.is_empty() {
+            return;
+        }
+        let (plain, _, _) = decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
+        *v = plain;
+    }
+
+    fn maybe_encrypt_option_value(k: &str, v: &mut String) {
+        if !Self::is_encrypted_option(k) || v.is_empty() {
+            return;
+        }
+        *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
     }
 
     pub fn update_id() {
@@ -2871,6 +2904,7 @@ pub mod keys {
     pub const OPTION_ENABLE_LAN_DISCOVERY: &str = "enable-lan-discovery";
     pub const OPTION_DIRECT_SERVER: &str = "direct-server";
     pub const OPTION_DIRECT_ACCESS_PORT: &str = "direct-access-port";
+    pub const OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE: &str = "direct-access-pairing-passphrase";
     pub const OPTION_WHITELIST: &str = "whitelist";
     pub const OPTION_ALLOW_AUTO_DISCONNECT: &str = "allow-auto-disconnect";
     pub const OPTION_AUTO_DISCONNECT_TIMEOUT: &str = "auto-disconnect-timeout";
@@ -3097,6 +3131,7 @@ pub mod keys {
         OPTION_ENABLE_LAN_DISCOVERY,
         OPTION_DIRECT_SERVER,
         OPTION_DIRECT_ACCESS_PORT,
+        OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE,
         OPTION_WHITELIST,
         OPTION_ALLOW_AUTO_DISCONNECT,
         OPTION_AUTO_DISCONNECT_TIMEOUT,
