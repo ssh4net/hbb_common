@@ -302,6 +302,12 @@ pub struct BootstrapConfig {
         deserialize_with = "deserialize_string"
     )]
     update_server: String,
+    #[serde(
+        rename = "trusted-peers",
+        default,
+        deserialize_with = "deserialize_hashmap_string_string"
+    )]
+    trusted_peers: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -954,6 +960,16 @@ impl Config {
         BOOTSTRAP_CONFIG.read().unwrap().update_server.clone()
     }
 
+    pub fn get_bootstrap_trusted_peer_key(peer_id: &str) -> String {
+        BOOTSTRAP_CONFIG
+            .read()
+            .unwrap()
+            .trusted_peers
+            .get(peer_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     #[cfg(test)]
     fn set_bootstrap_config_for_test(config: BootstrapConfig) {
         *BOOTSTRAP_CONFIG.write().unwrap() = config;
@@ -1290,7 +1306,10 @@ impl Config {
     }
 
     fn is_encrypted_option(k: &str) -> bool {
-        matches!(k, keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE)
+        matches!(
+            k,
+            keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE | keys::OPTION_PEER_PAIRING_PASSPHRASE
+        )
     }
 
     fn maybe_decrypt_option_value(k: &str, v: &mut String) {
@@ -2273,6 +2292,8 @@ pub struct DiscoveryPeer {
     #[serde(default, deserialize_with = "deserialize_string")]
     pub id: String,
     #[serde(default, deserialize_with = "deserialize_string")]
+    pub sign_pk: String,
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub username: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     pub hostname: String,
@@ -2905,6 +2926,9 @@ pub mod keys {
     pub const OPTION_DIRECT_SERVER: &str = "direct-server";
     pub const OPTION_DIRECT_ACCESS_PORT: &str = "direct-access-port";
     pub const OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE: &str = "direct-access-pairing-passphrase";
+    pub const OPTION_PEER_PAIRING_PASSPHRASE: &str = "peer-pairing-passphrase";
+    pub const OPTION_ALLOW_UNVERIFIED_PEER_TRUST: &str = "allow-unverified-peer-trust";
+    pub const OPTION_LAN_DISCOVERY_MODE: &str = "lan-discovery-mode";
     pub const OPTION_WHITELIST: &str = "whitelist";
     pub const OPTION_ALLOW_AUTO_DISCONNECT: &str = "allow-auto-disconnect";
     pub const OPTION_AUTO_DISCONNECT_TIMEOUT: &str = "auto-disconnect-timeout";
@@ -3132,6 +3156,9 @@ pub mod keys {
         OPTION_DIRECT_SERVER,
         OPTION_DIRECT_ACCESS_PORT,
         OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE,
+        OPTION_PEER_PAIRING_PASSPHRASE,
+        OPTION_ALLOW_UNVERIFIED_PEER_TRUST,
+        OPTION_LAN_DISCOVERY_MODE,
         OPTION_WHITELIST,
         OPTION_ALLOW_AUTO_DISCONNECT,
         OPTION_AUTO_DISCONNECT_TIMEOUT,
@@ -3523,6 +3550,10 @@ mod tests {
             key: "bootstrap-key".to_owned(),
             api_server: "http://lan-only.example:21114".to_owned(),
             update_server: "http://updates.example/version/latest".to_owned(),
+            trusted_peers: HashMap::from([(
+                "peer-1".to_owned(),
+                "peer-1-base64-signing-key".to_owned(),
+            )]),
             ..Default::default()
         };
         Config::set_bootstrap_config_for_test(bootstrap);
@@ -3558,6 +3589,11 @@ mod tests {
             Config::get_bootstrap_update_server(),
             "http://updates.example/version/latest"
         );
+        assert_eq!(
+            Config::get_bootstrap_trusted_peer_key("peer-1"),
+            "peer-1-base64-signing-key"
+        );
+        assert_eq!(Config::get_bootstrap_trusted_peer_key("missing"), "");
 
         Config::set_bootstrap_config_for_test(saved_bootstrap);
         *EXE_RENDEZVOUS_SERVER.write().unwrap() = saved_exe;
