@@ -106,6 +106,7 @@ lazy_static::lazy_static! {
     static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
     static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
     static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
+    static ref PAIRED_VIEWERS: RwLock<(Vec<PairedViewer>, bool)> = Default::default();
     static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
     pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("".to_owned());
     pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
@@ -265,6 +266,8 @@ pub struct Config2 {
     unlock_pin: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     trusted_devices: String,
+    #[serde(default, deserialize_with = "deserialize_string")]
+    paired_viewers: String,
 
     #[serde(default)]
     socks: Option<Socks5Server>,
@@ -1266,11 +1269,17 @@ impl Config {
                 v.remove(&key);
             }
         }
+        let direct_pairing_changed = v.get(keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE)
+            != previous_options.get(keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE);
         let mut config = CONFIG2.write().unwrap();
         if config.options == v {
             return;
         }
         config.options = v;
+        if direct_pairing_changed {
+            config.paired_viewers.clear();
+            *PAIRED_VIEWERS.write().unwrap() = (Default::default(), true);
+        }
         config.store();
     }
 
@@ -1291,9 +1300,14 @@ impl Config {
     }
 
     pub fn set_option(k: String, v: String) {
+        let clear_paired_viewers = k == keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE;
         if !is_option_can_save(&OVERWRITE_SETTINGS, &k, &DEFAULT_SETTINGS, &v) {
             let mut config = CONFIG2.write().unwrap();
             if config.options.remove(&k).is_some() {
+                if clear_paired_viewers {
+                    config.paired_viewers.clear();
+                    *PAIRED_VIEWERS.write().unwrap() = (Default::default(), true);
+                }
                 config.store();
             }
             return;
@@ -1313,6 +1327,10 @@ impl Config {
                 config.options.remove(&k);
             } else {
                 config.options.insert(k, stored);
+            }
+            if clear_paired_viewers {
+                config.paired_viewers.clear();
+                *PAIRED_VIEWERS.write().unwrap() = (Default::default(), true);
             }
             config.store();
         }
@@ -1691,6 +1709,78 @@ impl Config {
 
     pub fn clear_trusted_devices() {
         Self::set_trusted_devices(Default::default());
+    }
+
+    pub fn get_paired_viewers_json() -> String {
+        serde_json::to_string(&Self::get_paired_viewers()).unwrap_or_default()
+    }
+
+    pub fn get_paired_viewers() -> Vec<PairedViewer> {
+        let (viewers, synced) = PAIRED_VIEWERS.read().unwrap().clone();
+        if synced {
+            return viewers;
+        }
+        let viewers = CONFIG2.read().unwrap().paired_viewers.clone();
+        let (viewers, succ, store) = decrypt_str_or_original(&viewers, PASSWORD_ENC_VERSION);
+        if succ {
+            let mut viewers: Vec<PairedViewer> = serde_json::from_str(&viewers).unwrap_or_default();
+            let len = viewers.len();
+            viewers.retain(|d| !d.outdate());
+            if store || viewers.len() != len {
+                Self::set_paired_viewers(viewers.clone());
+            }
+            *PAIRED_VIEWERS.write().unwrap() = (viewers.clone(), true);
+            viewers
+        } else {
+            Default::default()
+        }
+    }
+
+    fn set_paired_viewers(mut paired_viewers: Vec<PairedViewer>) {
+        paired_viewers.retain(|d| !d.outdate());
+        let viewers = serde_json::to_string(&paired_viewers).unwrap_or_default();
+        let max_len = 1024 * 1024;
+        if viewers.bytes().len() > max_len {
+            log::error!("Paired viewers too large: {}", viewers.bytes().len());
+            return;
+        }
+        let viewers = encrypt_str_or_original(&viewers, PASSWORD_ENC_VERSION, max_len);
+        let mut config = CONFIG2.write().unwrap();
+        config.paired_viewers = viewers;
+        config.store();
+        *PAIRED_VIEWERS.write().unwrap() = (paired_viewers, true);
+    }
+
+    pub fn add_paired_viewer(viewer: PairedViewer) {
+        if viewer.sign_pk.is_empty() || viewer.scope.is_empty() {
+            return;
+        }
+        let mut viewers = Self::get_paired_viewers();
+        viewers.retain(|d| d.scope != viewer.scope || d.sign_pk != viewer.sign_pk);
+        viewers.push(viewer);
+        Self::set_paired_viewers(viewers);
+    }
+
+    pub fn remove_paired_viewers(sign_pks: &Vec<Bytes>) {
+        let mut viewers = Self::get_paired_viewers();
+        viewers.retain(|d| !sign_pks.contains(&d.sign_pk));
+        Self::set_paired_viewers(viewers);
+    }
+
+    pub fn has_paired_viewer(scope: &str, id: &str, sign_pk: &[u8]) -> bool {
+        if scope.is_empty() || sign_pk.is_empty() {
+            return false;
+        }
+        Self::get_paired_viewers().iter().any(|viewer| {
+            !viewer.outdate()
+                && viewer.scope == scope
+                && viewer.id == id
+                && viewer.sign_pk.as_ref() == sign_pk
+        })
+    }
+
+    pub fn clear_paired_viewers() {
+        Self::set_paired_viewers(Default::default());
     }
 
     pub fn get() -> Config {
@@ -2770,6 +2860,23 @@ impl TrustedDevice {
     }
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct PairedViewer {
+    pub sign_pk: Bytes,
+    pub time: i64,
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub scope: String,
+}
+
+impl PairedViewer {
+    pub fn outdate(&self) -> bool {
+        const DAYS_30: i64 = 30 * 24 * 60 * 60 * 1000;
+        self.time + DAYS_30 < crate::get_time()
+    }
+}
+
 deserialize_default!(deserialize_string, String);
 deserialize_default!(deserialize_bool, bool);
 deserialize_default!(deserialize_i32, i32);
@@ -2963,6 +3070,7 @@ pub mod keys {
     pub const OPTION_DIRECT_ACCESS_PORT: &str = "direct-access-port";
     pub const OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE: &str = "direct-access-pairing-passphrase";
     pub const OPTION_PEER_PAIRING_PASSPHRASE: &str = "peer-pairing-passphrase";
+    pub const OPTION_REMEMBER_PAIRED_VIEWERS: &str = "remember-paired-viewers";
     pub const OPTION_ALLOW_UNVERIFIED_PEER_TRUST: &str = "allow-unverified-peer-trust";
     pub const OPTION_LAN_DISCOVERY_MODE: &str = "lan-discovery-mode";
     pub const OPTION_WHITELIST: &str = "whitelist";
@@ -3197,6 +3305,7 @@ pub mod keys {
         OPTION_DIRECT_ACCESS_PORT,
         OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE,
         OPTION_PEER_PAIRING_PASSPHRASE,
+        OPTION_REMEMBER_PAIRED_VIEWERS,
         OPTION_ALLOW_UNVERIFIED_PEER_TRUST,
         OPTION_LAN_DISCOVERY_MODE,
         OPTION_WHITELIST,
