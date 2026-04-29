@@ -2160,7 +2160,7 @@ impl PeerConfig {
         D: de::Deserializer<'de>,
     {
         let v: i32 = de::Deserialize::deserialize(deserializer)?;
-        if v >= 20 && v <= 150 {
+        if v >= 20 && v <= 300 {
             Ok(v)
         } else {
             Ok(Self::default_edge_scroll_edge_thickness())
@@ -2502,9 +2502,11 @@ impl UserDefaultConfig {
             keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),
-            keys::OPTION_SCROLL_STYLE => {
-                self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])
-            }
+            keys::OPTION_SCROLL_STYLE => self.get_string(
+                key,
+                "scrollauto",
+                vec!["scrolledge", "scrollbar", "scrolledgeaccel"],
+            ),
             keys::OPTION_IMAGE_QUALITY => {
                 self.get_string(key, "balanced", vec!["best", "low", "custom"])
             }
@@ -2515,7 +2517,7 @@ impl UserDefaultConfig {
             keys::OPTION_CUSTOM_FPS => self.get_num_string(key, 30.0, 5.0, 120.0),
             keys::OPTION_CUSTOM_FPS_MODE => self.get_string(key, "adaptive", vec!["fixed"]),
             keys::OPTION_ENABLE_FILE_COPY_PASTE => self.get_string(key, "Y", vec!["", "N"]),
-            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS => self.get_num_string(key, 100, 20, 150),
+            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS => self.get_num_string(key, 100, 20, 300),
             keys::OPTION_TRACKPAD_SPEED => self.get_num_string(key, 100, 10, 1000),
             _ => self
                 .get_after(key)
@@ -3792,6 +3794,43 @@ mod tests {
         assert_eq!(Config::get_option(&key), original);
 
         *CONFIG2.write().unwrap() = saved_config2;
+    }
+
+    #[test]
+    fn test_user_default_edge_acceleration_options() {
+        let mut cfg = UserDefaultConfig::default();
+
+        cfg.options.insert(
+            keys::OPTION_SCROLL_STYLE.to_owned(),
+            "scrolledgeaccel".to_owned(),
+        );
+        assert_eq!(
+            cfg.get(keys::OPTION_SCROLL_STYLE),
+            "scrolledgeaccel".to_owned()
+        );
+
+        cfg.options.insert(
+            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS.to_owned(),
+            "300".to_owned(),
+        );
+        assert_eq!(cfg.get(keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS), "300");
+
+        cfg.options.insert(
+            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS.to_owned(),
+            "301".to_owned(),
+        );
+        assert_eq!(cfg.get(keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS), "100");
+
+        let max_edge_thickness =
+            toml::from_str::<PeerConfig>("edge_scroll_edge_thickness = 300").unwrap();
+        assert_eq!(max_edge_thickness.edge_scroll_edge_thickness, 300);
+
+        let over_limit_edge_thickness =
+            toml::from_str::<PeerConfig>("edge_scroll_edge_thickness = 301").unwrap();
+        assert_eq!(
+            over_limit_edge_thickness.edge_scroll_edge_thickness,
+            PeerConfig::default_edge_scroll_edge_thickness()
+        );
     }
 
     #[test]
