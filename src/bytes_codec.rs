@@ -63,7 +63,6 @@ impl BytesCodec {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Too big packet"));
         }
         src.advance(head_len);
-        src.reserve(n);
         Ok(Some(n))
     }
 
@@ -304,6 +303,15 @@ mod tests {
         let mut codec = BytesCodec::new();
         let mut buf = encode_head_only(DEFAULT_MAX_PACKET_LENGTH + 1);
         assert!(codec.decode(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_codec_does_not_preallocate_from_header_only_packet() {
+        let mut codec = BytesCodec::new();
+        let mut buf = encode_head_only(DEFAULT_MAX_PACKET_LENGTH);
+        let before_capacity = buf.capacity();
+        assert!(matches!(codec.decode(&mut buf), Ok(None)));
+        assert!(buf.capacity() <= before_capacity);
     }
 
     #[test]
