@@ -76,6 +76,18 @@ pub use x11;
 
 pub type SessionID = uuid::Uuid;
 
+const RUSTADMIN_REVISION_RAW: &str = include_str!("../rustadmin_revision.txt");
+
+#[inline]
+pub fn rustadmin_revision() -> &'static str {
+    RUSTADMIN_REVISION_RAW.trim()
+}
+
+#[inline]
+pub fn format_full_version(version: &str) -> String {
+    format!("{version} rev {}", rustadmin_revision())
+}
+
 #[inline]
 pub async fn sleep(sec: f32) {
     tokio::time::sleep(time::Duration::from_secs_f32(sec)).await;
@@ -227,12 +239,22 @@ pub fn get_version_from_url(url: &str) -> String {
 
 pub fn gen_version() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=../hbb_common/rustadmin_revision.txt");
+    println!("cargo:rerun-if-changed=rustadmin_revision.txt");
     use std::io::prelude::*;
     let mut file = File::create("./src/version.rs").unwrap();
+    let revision = rustadmin_revision();
     for line in read_lines("Cargo.toml").unwrap().flatten() {
         let ab: Vec<&str> = line.split('=').map(|x| x.trim()).collect();
         if ab.len() == 2 && ab[0] == "version" {
-            file.write_all(format!("pub const VERSION: &str = {};\n", ab[1]).as_bytes())
+            let version = ab[1].trim_matches('"');
+            file.write_all(
+                format!(
+                    "#[allow(dead_code)]\npub const VERSION: &str = {};\n#[allow(dead_code)]\npub const RUSTADMIN_REVISION: &str = \"{revision}\";\n#[allow(dead_code)]\npub const FULL_VERSION: &str = \"{version} rev {revision}\";\n",
+                    ab[1]
+                )
+                .as_bytes(),
+            )
                 .ok();
             break;
         }
