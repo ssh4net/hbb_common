@@ -655,6 +655,141 @@ pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultTy
     }
 }
 
+#[cfg(not(windows))]
+fn ipc_name_component(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch == '/' || ch == '\\' || ch == '\0' {
+            out.push('_');
+        } else {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        "rustdesk".to_owned()
+    } else {
+        out
+    }
+}
+
+#[cfg(not(windows))]
+fn current_euid() -> u32 {
+    unsafe { libc::geteuid() as u32 }
+}
+
+#[cfg(not(windows))]
+fn prepare_ipc_dir(path: &Path, mode: u32) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                log::error!("Refusing to use symlink IPC directory '{}'", path.display());
+                return;
+            }
+            if !meta.is_dir() {
+                log::error!(
+                    "Refusing to use non-directory IPC path '{}'",
+                    path.display()
+                );
+                return;
+            }
+            if meta.uid() != current_euid() {
+                log::error!(
+                    "Refusing to use IPC directory '{}' owned by uid {}, expected {}",
+                    path.display(),
+                    meta.uid(),
+                    current_euid()
+                );
+                return;
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(err) = fs::create_dir(path) {
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    log::error!(
+                        "Failed to create IPC directory '{}': {}",
+                        path.display(),
+                        err
+                    );
+                    return;
+                }
+            }
+            match fs::symlink_metadata(path) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() || !meta.is_dir() {
+                        log::error!(
+                            "Refusing to use unsafe IPC path after create '{}'",
+                            path.display()
+                        );
+                        return;
+                    }
+                    if meta.uid() != current_euid() {
+                        log::error!(
+                            "Refusing to use IPC directory '{}' owned by uid {}, expected {}",
+                            path.display(),
+                            meta.uid(),
+                            current_euid()
+                        );
+                        return;
+                    }
+                }
+                Err(err) => {
+                    log::error!(
+                        "Failed to inspect IPC directory '{}': {}",
+                        path.display(),
+                        err
+                    );
+                    return;
+                }
+            }
+        }
+        Err(err) => {
+            log::error!(
+                "Failed to inspect IPC directory '{}': {}",
+                path.display(),
+                err
+            );
+            return;
+        }
+    }
+
+    if let Err(err) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        log::error!(
+            "Failed to set IPC directory permissions for '{}': {}",
+            path.display(),
+            err
+        );
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "android")))]
+fn usable_ipc_parent(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match fs::symlink_metadata(path) {
+        Ok(meta) => !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() == current_euid(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "android")))]
+fn ipc_parent_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+    {
+        if usable_ipc_parent(&path) {
+            return path;
+        }
+        log::warn!(
+            "Ignoring unusable XDG_RUNTIME_DIR for IPC: '{}'",
+            path.display()
+        );
+    }
+    std::env::temp_dir()
+}
+
 impl Config {
     fn load_<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
         suffix: &str,
@@ -884,14 +1019,21 @@ impl Config {
         }
         #[cfg(not(windows))]
         {
-            use std::os::unix::fs::PermissionsExt;
+            let app_name = ipc_name_component(&APP_NAME.read().unwrap());
             #[cfg(target_os = "android")]
-            let mut path: PathBuf =
-                format!("{}/{}", *APP_DIR.read().unwrap(), *APP_NAME.read().unwrap()).into();
+            let mut path: PathBuf = {
+                let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
+                path.push(app_name);
+                prepare_ipc_dir(&path, 0o700);
+                path
+            };
             #[cfg(not(target_os = "android"))]
-            let mut path: PathBuf = format!("/tmp/{}", *APP_NAME.read().unwrap()).into();
-            fs::create_dir(&path).ok();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o0777)).ok();
+            let mut path: PathBuf = {
+                let mut base = ipc_parent_dir();
+                base.push(format!("{}-{}", app_name, current_euid()));
+                prepare_ipc_dir(&base, 0o700);
+                base
+            };
             path.push(format!("ipc{postfix}"));
             path.to_str().unwrap_or("").to_owned()
         }
