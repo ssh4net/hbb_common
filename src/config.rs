@@ -3224,6 +3224,7 @@ pub mod keys {
     pub const OPTION_ALLOW_AUTO_RECORD_INCOMING: &str = "allow-auto-record-incoming";
     pub const OPTION_ALLOW_AUTO_RECORD_OUTGOING: &str = "allow-auto-record-outgoing";
     pub const OPTION_VIDEO_SAVE_DIRECTORY: &str = "video-save-directory";
+    pub const OPTION_ALLOW_CLIPBOARD_DEBUG: &str = "allow-clipboard-debug";
     pub const OPTION_ENABLE_ABR: &str = "enable-abr";
     pub const OPTION_ALLOW_REMOVE_WALLPAPER: &str = "allow-remove-wallpaper";
     pub const OPTION_ALLOW_ALWAYS_SOFTWARE_RENDER: &str = "allow-always-software-render";
@@ -3419,6 +3420,7 @@ pub mod keys {
         OPTION_ALLOW_REMOTE_CM_MODIFICATION,
         OPTION_ALLOW_AUTO_RECORD_OUTGOING,
         OPTION_VIDEO_SAVE_DIRECTORY,
+        OPTION_ALLOW_CLIPBOARD_DEBUG,
         OPTION_ENABLE_UDP_PUNCH,
         OPTION_ENABLE_IPV6_PUNCH,
         OPTION_TOUCH_MODE,

@@ -822,6 +822,12 @@ message MessageQuery {
   int32 switch_display = 1;
 }
 
+message DebugEvent {
+  string category = 1;
+  string text = 2;
+  int64 timestamp_ms = 3;
+}
+
 message Misc {
   oneof union {
     ChatMessage chat_message = 4;
@@ -859,6 +865,7 @@ message Misc {
     DisplayResolution change_display_resolution = 36;
     MessageQuery message_query = 37;
     int32 follow_current_display = 38;
+    DebugEvent debug_event = 39;
   }
 }
 
