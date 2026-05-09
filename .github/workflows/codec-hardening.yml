@@ -7,18 +7,29 @@ on:
 jobs:
   codec-hardening:
     runs-on: ubuntu-latest
+    env:
+      RUSTADMIN_CI_TOKEN: ${{ secrets.RUSTADMIN_CI_TOKEN }}
     steps:
       - name: Checkout hbb_common
         uses: actions/checkout@v4
         with:
           path: hbb_common
 
-      - name: Checkout tests
+      - name: Checkout private tests
+        if: env.RUSTADMIN_CI_TOKEN != ''
         uses: actions/checkout@v4
         with:
           repository: RustAdministrator/rustadmin-tests
-          token: ${{ secrets.RUSTADMIN_CI_TOKEN || github.token }}
+          token: ${{ secrets.RUSTADMIN_CI_TOKEN }}
           path: rustdesk-tests
+
+      - name: Checkout public tests
+        if: env.RUSTADMIN_CI_TOKEN == ''
+        run: |
+          if ! git clone --depth=1 https://github.com/RustAdministrator/rustadmin-tests.git rustdesk-tests; then
+            echo "::error::Unable to checkout RustAdministrator/rustadmin-tests. Add RUSTADMIN_CI_TOKEN with read-only Contents access to that repository, or make rustadmin-tests public."
+            exit 1
+          fi
 
       - name: Run codec hardening gate
         run: ./rustdesk-tests/scripts/run_codec_hardening_ci.sh
