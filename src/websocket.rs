@@ -407,10 +407,12 @@ pub fn check_ws(endpoint: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{keys, Config};
+    use crate::config::{keys, lock_test_config, Config};
 
     #[test]
     fn test_check_ws() {
+        let _config_guard = lock_test_config();
+
         // enable websocket
         Config::set_option(keys::OPTION_ALLOW_WEBSOCKET.to_string(), "Y".to_string());
 

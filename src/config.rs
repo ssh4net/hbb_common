@@ -124,6 +124,18 @@ lazy_static::lazy_static! {
     pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 }
 
+#[cfg(test)]
+lazy_static::lazy_static! {
+    static ref CONFIG_TEST_MUTEX: Mutex<()> = Default::default();
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_config() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(target_os = "android")]
 lazy_static::lazy_static! {
     pub static ref ANDROID_RUSTLS_PLATFORM_VERIFIER_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -678,6 +690,12 @@ fn current_euid() -> u32 {
 }
 
 #[cfg(not(windows))]
+#[inline]
+pub fn is_service_ipc_postfix(postfix: &str) -> bool {
+    postfix == "_service" || postfix.starts_with("_uinput_")
+}
+
+#[cfg(not(windows))]
 fn prepare_ipc_dir(path: &Path, mode: u32) {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -764,13 +782,18 @@ fn prepare_ipc_dir(path: &Path, mode: u32) {
 }
 
 #[cfg(all(not(windows), not(target_os = "android")))]
-fn usable_ipc_parent(path: &Path) -> bool {
+fn usable_ipc_parent_for_uid(path: &Path, uid: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     match fs::symlink_metadata(path) {
-        Ok(meta) => !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() == current_euid(),
+        Ok(meta) => !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() == uid,
         Err(_) => false,
     }
+}
+
+#[cfg(all(not(windows), not(target_os = "android")))]
+fn usable_ipc_parent(path: &Path) -> bool {
+    usable_ipc_parent_for_uid(path, current_euid())
 }
 
 #[cfg(all(not(windows), not(target_os = "android")))]
@@ -788,6 +811,37 @@ fn ipc_parent_dir() -> PathBuf {
         );
     }
     std::env::temp_dir()
+}
+
+#[cfg(all(not(windows), not(target_os = "android")))]
+fn ipc_parent_dir_for_uid(uid: u32, postfix: &str) -> PathBuf {
+    let app_name = ipc_name_component(&APP_NAME.read().unwrap());
+    let is_service = is_service_ipc_postfix(postfix);
+    let mut path = if is_service {
+        std::env::temp_dir()
+    } else if uid == current_euid() {
+        ipc_parent_dir()
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+            if usable_ipc_parent_for_uid(&runtime_dir, uid) {
+                runtime_dir
+            } else {
+                std::env::temp_dir()
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            std::env::temp_dir()
+        }
+    };
+    path.push(if is_service {
+        format!("{app_name}-service")
+    } else {
+        format!("{app_name}-{uid}")
+    });
+    path
 }
 
 impl Config {
@@ -1019,24 +1073,35 @@ impl Config {
         }
         #[cfg(not(windows))]
         {
-            let app_name = ipc_name_component(&APP_NAME.read().unwrap());
+            let mode = if is_service_ipc_postfix(postfix) {
+                0o711
+            } else {
+                0o700
+            };
             #[cfg(target_os = "android")]
             let mut path: PathBuf = {
+                let app_name = ipc_name_component(&APP_NAME.read().unwrap());
                 let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
                 path.push(app_name);
-                prepare_ipc_dir(&path, 0o700);
+                prepare_ipc_dir(&path, mode);
                 path
             };
             #[cfg(not(target_os = "android"))]
             let mut path: PathBuf = {
-                let mut base = ipc_parent_dir();
-                base.push(format!("{}-{}", app_name, current_euid()));
-                prepare_ipc_dir(&base, 0o700);
+                let base = ipc_parent_dir_for_uid(current_euid(), postfix);
+                prepare_ipc_dir(&base, mode);
                 base
             };
             path.push(format!("ipc{postfix}"));
             path.to_str().unwrap_or("").to_owned()
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn ipc_path_for_uid(uid: u32, postfix: &str) -> String {
+        let mut path = ipc_parent_dir_for_uid(uid, postfix);
+        path.push(format!("ipc{postfix}"));
+        path.to_str().unwrap_or("").to_owned()
     }
 
     pub fn icon_path() -> PathBuf {
@@ -1356,6 +1421,15 @@ impl Config {
             .read()
             .unwrap()
             .get(keys::OPTION_DISABLE_UNLOCK_PIN)
+            .map(|v| v == "Y")
+            .unwrap_or(false)
+    }
+
+    pub fn enable_perm_change_in_accept_window() -> bool {
+        BUILTIN_SETTINGS
+            .read()
+            .unwrap()
+            .get(keys::OPTION_ENABLE_PERM_CHANGE_IN_ACCEPT_WINDOW)
             .map(|v| v == "Y")
             .unwrap_or(false)
     }
@@ -3305,6 +3379,8 @@ pub mod keys {
     pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
     pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
     pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
+    pub const OPTION_ENABLE_PERM_CHANGE_IN_ACCEPT_WINDOW: &str =
+        "enable-perm-change-in-accept-window";
     pub const OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD: &str = "disable-change-permanent-password";
     pub const OPTION_DISABLE_CHANGE_ID: &str = "disable-change-id";
     pub const OPTION_DISABLE_UNLOCK_PIN: &str = "disable-unlock-pin";
@@ -3522,6 +3598,7 @@ pub mod keys {
         OPTION_REGISTER_DEVICE,
         OPTION_HIDE_POWERED_BY_ME,
         OPTION_MAIN_WINDOW_ALWAYS_ON_TOP,
+        OPTION_ENABLE_PERM_CHANGE_IN_ACCEPT_WINDOW,
         OPTION_FILE_TRANSFER_MAX_FILES,
         OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD,
         OPTION_DISABLE_CHANGE_ID,
@@ -3636,6 +3713,8 @@ mod tests {
 
     #[test]
     fn test_overwrite_settings() {
+        let _config_guard = lock_test_config();
+
         DEFAULT_SETTINGS
             .write()
             .unwrap()
@@ -3789,6 +3868,60 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn test_service_ipc_path_is_shared_across_uids() {
+        assert!(is_service_ipc_postfix("_service"));
+        assert!(is_service_ipc_postfix("_uinput_keyboard"));
+        assert!(!is_service_ipc_postfix("_probe"));
+
+        let user_1000 = Config::ipc_path_for_uid(1000, "_probe");
+        let user_2000 = Config::ipc_path_for_uid(2000, "_probe");
+        assert_ne!(user_1000, user_2000);
+
+        let service_1000 = Config::ipc_path_for_uid(1000, "_service");
+        let service_2000 = Config::ipc_path_for_uid(2000, "_service");
+        assert_eq!(service_1000, service_2000);
+
+        let uinput_1000 = Config::ipc_path_for_uid(1000, "_uinput_keyboard");
+        let uinput_2000 = Config::ipc_path_for_uid(2000, "_uinput_keyboard");
+        assert_eq!(uinput_1000, uinput_2000);
+    }
+
+    #[test]
+    fn test_perm_change_in_accept_window_default_denied() {
+        let _config_guard = lock_test_config();
+
+        struct BuiltinSettingsGuard(std::collections::HashMap<String, String>);
+
+        impl Drop for BuiltinSettingsGuard {
+            fn drop(&mut self) {
+                *BUILTIN_SETTINGS.write().unwrap() = self.0.clone();
+            }
+        }
+
+        let _guard = BuiltinSettingsGuard(BUILTIN_SETTINGS.read().unwrap().clone());
+        let key = keys::OPTION_ENABLE_PERM_CHANGE_IN_ACCEPT_WINDOW.to_owned();
+
+        {
+            let mut settings = BUILTIN_SETTINGS.write().unwrap();
+            settings.remove(&key);
+        }
+        assert!(!Config::enable_perm_change_in_accept_window());
+
+        {
+            let mut settings = BUILTIN_SETTINGS.write().unwrap();
+            settings.insert(key.clone(), "N".to_owned());
+        }
+        assert!(!Config::enable_perm_change_in_accept_window());
+
+        {
+            let mut settings = BUILTIN_SETTINGS.write().unwrap();
+            settings.insert(key, "Y".to_owned());
+        }
+        assert!(Config::enable_perm_change_in_accept_window());
+    }
+
+    #[test]
     fn test_config_deserialize() {
         let wrong_type_str = r#"
         id = true
@@ -3824,6 +3957,8 @@ mod tests {
 
     #[test]
     fn test_bootstrap_rendezvous_resolution() {
+        let _config_guard = lock_test_config();
+
         let saved_bootstrap = BOOTSTRAP_CONFIG.read().unwrap().clone();
         let saved_exe = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         let saved_prod = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
@@ -3900,6 +4035,8 @@ mod tests {
 
     #[test]
     fn test_encrypted_option_rejects_oversized_value_in_set_option() {
+        let _config_guard = lock_test_config();
+
         let saved_config2 = CONFIG2.read().unwrap().clone();
         let key = keys::OPTION_DIRECT_ACCESS_PAIRING_PASSPHRASE.to_owned();
         let original = "secret-passphrase".to_owned();
@@ -3920,6 +4057,8 @@ mod tests {
 
     #[test]
     fn test_encrypted_option_rejects_oversized_value_in_set_options() {
+        let _config_guard = lock_test_config();
+
         let saved_config2 = CONFIG2.read().unwrap().clone();
         let key = keys::OPTION_PEER_PAIRING_PASSPHRASE.to_owned();
         let original = "peer-secret-passphrase".to_owned();
