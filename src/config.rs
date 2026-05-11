@@ -690,7 +690,6 @@ fn current_euid() -> u32 {
     unsafe { libc::geteuid() as u32 }
 }
 
-#[cfg(not(windows))]
 #[inline]
 pub fn is_service_ipc_postfix(postfix: &str) -> bool {
     postfix == "_service" || postfix.starts_with("_uinput_")
