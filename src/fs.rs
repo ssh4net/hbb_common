@@ -18,11 +18,12 @@ use tokio::{
 use crate::{anyhow::anyhow, bail, get_version_number, message_proto::*, ResultType, Stream};
 // https://doc.rust-lang.org/std/os/windows/fs/trait.MetadataExt.html
 use crate::{
-    compress::{compress, decompress},
+    compress::{compress, decompress_limited},
     config::Config,
 };
 
 static NEXT_JOB_ID: AtomicI32 = AtomicI32::new(1);
+const FILE_BLOCK_DECOMPRESS_MAX_LEN: usize = 128 * 1024;
 
 pub fn get_next_job_id() -> i32 {
     NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst)
@@ -808,7 +809,7 @@ impl TransferJob {
             }
         }
         if block.compressed {
-            let tmp = decompress(&block.data);
+            let tmp = decompress_limited(&block.data, FILE_BLOCK_DECOMPRESS_MAX_LEN)?;
             self.data_stream
                 .as_mut()
                 .ok_or(anyhow!("data stream is None"))?

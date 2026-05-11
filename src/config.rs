@@ -21,7 +21,7 @@ use sodiumoxide::base64;
 use sodiumoxide::crypto::sign;
 
 use crate::{
-    compress::{compress, decompress},
+    compress::{compress, decompress_limited},
     log,
     password_security::{
         decrypt_str_or_original, decrypt_vec_or_original, encrypt_str_or_original,
@@ -38,6 +38,7 @@ pub const READ_TIMEOUT: u64 = 18_000;
 // https://www.onsip.com/voip-resources/voip-fundamentals/what-is-nat-keepalive
 pub const REG_INTERVAL: i64 = 15_000;
 pub const COMPRESS_LEVEL: i32 = 3;
+const CONFIG_DECOMPRESS_MAX_LEN: usize = 64 * 1024 * 1024;
 const SERIAL: i32 = 3;
 const PASSWORD_ENC_VERSION: &str = "00";
 pub const ENCRYPT_MAX_LEN: usize = 128; // used for password, pin, etc, not for all
@@ -2916,9 +2917,17 @@ impl Ab {
             let mut data = vec![];
             if file.read_to_end(&mut data).is_ok() {
                 if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(ab) = serde_json::from_str::<Ab>(&String::from_utf8_lossy(&data)) {
-                        return ab;
+                    match decompress_limited(&data, CONFIG_DECOMPRESS_MAX_LEN) {
+                        Ok(data) => {
+                            if let Ok(ab) =
+                                serde_json::from_str::<Ab>(&String::from_utf8_lossy(&data))
+                            {
+                                return ab;
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("failed to decompress address book data: {}", err);
+                        }
                     }
                 }
             }
@@ -3045,10 +3054,17 @@ impl Group {
             let mut data = vec![];
             if file.read_to_end(&mut data).is_ok() {
                 if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(group) = serde_json::from_str::<Self>(&String::from_utf8_lossy(&data))
-                    {
-                        return group;
+                    match decompress_limited(&data, CONFIG_DECOMPRESS_MAX_LEN) {
+                        Ok(data) => {
+                            if let Ok(group) =
+                                serde_json::from_str::<Self>(&String::from_utf8_lossy(&data))
+                            {
+                                return group;
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("failed to decompress group data: {}", err);
+                        }
                     }
                 }
             }
