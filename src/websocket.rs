@@ -415,6 +415,10 @@ mod tests {
 
         // enable websocket
         Config::set_option(keys::OPTION_ALLOW_WEBSOCKET.to_string(), "Y".to_string());
+        Config::set_option(
+            keys::OPTION_ALLOW_ID_RELAY_SERVER.to_string(),
+            "Y".to_string(),
+        );
 
         // not set custom-rendezvous-server
         Config::set_option("custom-rendezvous-server".to_string(), "".to_string());

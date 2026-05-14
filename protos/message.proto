@@ -642,6 +642,20 @@ message PermissionInfo {
   bool enabled = 2;
 }
 
+message SessionPermissionRequest {
+  uint64 request_id = 1;
+  string name = 2;
+  bool enabled = 3;
+}
+
+message SessionPermissionResponse {
+  uint64 request_id = 1;
+  string name = 2;
+  bool enabled = 3;
+  bool approved = 4;
+  string reason = 5;
+}
+
 enum ImageQuality {
   NotSet = 0;
   Low = 2;
@@ -866,6 +880,8 @@ message Misc {
     MessageQuery message_query = 37;
     int32 follow_current_display = 38;
     DebugEvent debug_event = 39;
+    SessionPermissionRequest session_permission_request = 40;
+    SessionPermissionResponse session_permission_response = 41;
   }
 }
 

@@ -131,10 +131,76 @@ lazy_static::lazy_static! {
 }
 
 #[cfg(test)]
-pub(crate) fn lock_test_config() -> std::sync::MutexGuard<'static, ()> {
-    CONFIG_TEST_MUTEX
+pub(crate) struct TestConfigGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    config: Config,
+    config2: Config2,
+    bootstrap_config: BootstrapConfig,
+    local_config: LocalConfig,
+    user_default_config: UserDefaultConfig,
+    exe_rendezvous_server: String,
+    prod_rendezvous_server: String,
+    online: HashMap<String, i64>,
+    default_settings: HashMap<String, String>,
+    overwrite_settings: HashMap<String, String>,
+    default_local_settings: HashMap<String, String>,
+    overwrite_local_settings: HashMap<String, String>,
+    default_display_settings: HashMap<String, String>,
+    overwrite_display_settings: HashMap<String, String>,
+    hard_settings: HashMap<String, String>,
+    builtin_settings: HashMap<String, String>,
+}
+
+#[cfg(test)]
+impl Drop for TestConfigGuard {
+    fn drop(&mut self) {
+        *CONFIG.write().unwrap() = self.config.clone();
+        let config2_changed = CONFIG2.read().unwrap().clone() != self.config2;
+        *CONFIG2.write().unwrap() = self.config2.clone();
+        if config2_changed {
+            CONFIG2.read().unwrap().store();
+        }
+        *BOOTSTRAP_CONFIG.write().unwrap() = self.bootstrap_config.clone();
+        *LOCAL_CONFIG.write().unwrap() = self.local_config.clone();
+        *USER_DEFAULT_CONFIG.write().unwrap() = (self.user_default_config.clone(), Instant::now());
+        *EXE_RENDEZVOUS_SERVER.write().unwrap() = self.exe_rendezvous_server.clone();
+        *PROD_RENDEZVOUS_SERVER.write().unwrap() = self.prod_rendezvous_server.clone();
+        *ONLINE.lock().unwrap() = self.online.clone();
+        *DEFAULT_SETTINGS.write().unwrap() = self.default_settings.clone();
+        *OVERWRITE_SETTINGS.write().unwrap() = self.overwrite_settings.clone();
+        *DEFAULT_LOCAL_SETTINGS.write().unwrap() = self.default_local_settings.clone();
+        *OVERWRITE_LOCAL_SETTINGS.write().unwrap() = self.overwrite_local_settings.clone();
+        *DEFAULT_DISPLAY_SETTINGS.write().unwrap() = self.default_display_settings.clone();
+        *OVERWRITE_DISPLAY_SETTINGS.write().unwrap() = self.overwrite_display_settings.clone();
+        *HARD_SETTINGS.write().unwrap() = self.hard_settings.clone();
+        *BUILTIN_SETTINGS.write().unwrap() = self.builtin_settings.clone();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_config() -> TestConfigGuard {
+    let guard = CONFIG_TEST_MUTEX
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    TestConfigGuard {
+        _guard: guard,
+        config: CONFIG.read().unwrap().clone(),
+        config2: CONFIG2.read().unwrap().clone(),
+        bootstrap_config: BOOTSTRAP_CONFIG.read().unwrap().clone(),
+        local_config: LOCAL_CONFIG.read().unwrap().clone(),
+        user_default_config: USER_DEFAULT_CONFIG.read().unwrap().0.clone(),
+        exe_rendezvous_server: EXE_RENDEZVOUS_SERVER.read().unwrap().clone(),
+        prod_rendezvous_server: PROD_RENDEZVOUS_SERVER.read().unwrap().clone(),
+        online: ONLINE.lock().unwrap().clone(),
+        default_settings: DEFAULT_SETTINGS.read().unwrap().clone(),
+        overwrite_settings: OVERWRITE_SETTINGS.read().unwrap().clone(),
+        default_local_settings: DEFAULT_LOCAL_SETTINGS.read().unwrap().clone(),
+        overwrite_local_settings: OVERWRITE_LOCAL_SETTINGS.read().unwrap().clone(),
+        default_display_settings: DEFAULT_DISPLAY_SETTINGS.read().unwrap().clone(),
+        overwrite_display_settings: OVERWRITE_DISPLAY_SETTINGS.read().unwrap().clone(),
+        hard_settings: HARD_SETTINGS.read().unwrap().clone(),
+        builtin_settings: BUILTIN_SETTINGS.read().unwrap().clone(),
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -1121,8 +1187,15 @@ impl Config {
         }
     }
 
+    pub fn allow_id_relay_server() -> bool {
+        Self::get_bool_option(keys::OPTION_ALLOW_ID_RELAY_SERVER)
+    }
+
     pub fn get_rendezvous_server() -> String {
         let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
+        if rendezvous_server.is_empty() && !Self::allow_id_relay_server() {
+            return String::new();
+        }
         if rendezvous_server.is_empty() {
             rendezvous_server = Self::get_bootstrap_rendezvous_servers()
                 .into_iter()
@@ -1142,6 +1215,9 @@ impl Config {
         let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         if !s.is_empty() {
             return vec![s];
+        }
+        if !Self::allow_id_relay_server() {
+            return Vec::new();
         }
         let ss = Self::get_bootstrap_rendezvous_servers();
         if !ss.is_empty() {
@@ -3322,6 +3398,7 @@ pub mod keys {
     pub const OPTION_APPROVE_MODE: &str = "approve-mode";
     pub const OPTION_VERIFICATION_METHOD: &str = "verification-method";
     pub const OPTION_TEMPORARY_PASSWORD_LENGTH: &str = "temporary-password-length";
+    pub const OPTION_ALLOW_ID_RELAY_SERVER: &str = "allow-id-relay-server";
     pub const OPTION_CUSTOM_RENDEZVOUS_SERVER: &str = "custom-rendezvous-server";
     pub const OPTION_API_SERVER: &str = "api-server";
     pub const OPTION_KEY: &str = "key";
@@ -3558,6 +3635,7 @@ pub mod keys {
         OPTION_APPROVE_MODE,
         OPTION_VERIFICATION_METHOD,
         OPTION_TEMPORARY_PASSWORD_LENGTH,
+        OPTION_ALLOW_ID_RELAY_SERVER,
         OPTION_PROXY_URL,
         OPTION_PROXY_USERNAME,
         OPTION_PROXY_PASSWORD,
@@ -3991,6 +4069,7 @@ mod tests {
 
         assert_eq!(Config::get_rendezvous_server(), "");
         assert!(Config::get_rendezvous_servers().is_empty());
+        assert!(!Config::allow_id_relay_server());
 
         let bootstrap = BootstrapConfig {
             rendezvous_servers: vec!["lan-only.example".to_owned(), "vpn-only.example".to_owned()],
@@ -4017,6 +4096,14 @@ mod tests {
             );
             config2.serial = SERIAL + 1;
         }
+
+        assert_eq!(Config::get_rendezvous_server(), "");
+        assert!(Config::get_rendezvous_servers().is_empty());
+
+        Config::set_option(
+            keys::OPTION_ALLOW_ID_RELAY_SERVER.to_owned(),
+            "Y".to_owned(),
+        );
 
         assert_eq!(
             Config::get_rendezvous_server(),
@@ -4046,6 +4133,51 @@ mod tests {
         *EXE_RENDEZVOUS_SERVER.write().unwrap() = saved_exe;
         *PROD_RENDEZVOUS_SERVER.write().unwrap() = saved_prod;
         *CONFIG2.write().unwrap() = saved_config2;
+    }
+
+    #[test]
+    fn test_config_test_guard_restores_server_options() {
+        let saved_custom;
+        let saved_relay;
+        let saved_api;
+        let saved_allow;
+        {
+            let _config_guard = lock_test_config();
+            saved_custom = Config::get_option(keys::OPTION_CUSTOM_RENDEZVOUS_SERVER);
+            saved_relay = Config::get_option(keys::OPTION_RELAY_SERVER);
+            saved_api = Config::get_option(keys::OPTION_API_SERVER);
+            saved_allow = Config::get_option(keys::OPTION_ALLOW_ID_RELAY_SERVER);
+
+            Config::set_option(
+                keys::OPTION_CUSTOM_RENDEZVOUS_SERVER.to_owned(),
+                "127.0.0.1:21116".to_owned(),
+            );
+            Config::set_option(
+                keys::OPTION_RELAY_SERVER.to_owned(),
+                "127.0.0.1:21117".to_owned(),
+            );
+            Config::set_option(
+                keys::OPTION_API_SERVER.to_owned(),
+                "http://127.0.0.1:21114".to_owned(),
+            );
+            Config::set_option(
+                keys::OPTION_ALLOW_ID_RELAY_SERVER.to_owned(),
+                "Y".to_owned(),
+            );
+        }
+        {
+            let _config_guard = lock_test_config();
+            assert_eq!(
+                Config::get_option(keys::OPTION_CUSTOM_RENDEZVOUS_SERVER),
+                saved_custom
+            );
+            assert_eq!(Config::get_option(keys::OPTION_RELAY_SERVER), saved_relay);
+            assert_eq!(Config::get_option(keys::OPTION_API_SERVER), saved_api);
+            assert_eq!(
+                Config::get_option(keys::OPTION_ALLOW_ID_RELAY_SERVER),
+                saved_allow
+            );
+        }
     }
 
     #[test]
